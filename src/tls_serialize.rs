@@ -11,16 +11,64 @@ use cookie_factory::sequence::tuple;
 use cookie_factory::*;
 use std::io::Write;
 
+use crate::{KeyShare, SignatureScheme};
 pub use cookie_factory::GenError;
+use cookie_factory::SerializeFn;
 pub use rusticata_macros::Serialize;
 
-fn gen_tls_ext_sni_hostname<'a, 'b: 'a, W: Write + 'a>(
+pub fn gen_tls_ext_sni_hostname<'a, 'b: 'a, W: Write + 'a>(
     i: &(SNIType, &'b [u8]),
 ) -> impl SerializeFn<W> + 'a {
     tuple((be_u8((i.0).0), be_u16(i.1.len() as u16), slice(i.1)))
 }
 
-fn length_be_u16<W, F>(f: F) -> impl SerializeFn<W>
+pub const TLS_AES_128_GCM_SHA256: u16 = 0x1301;
+pub const TLS_AES_256_GCM_SHA384: u16 = 0x1302;
+pub const TLS_CHACHA20_POLY1305_SHA256: u16 = 0x1303;
+
+fn gen_tls_ext_supported_versions<'a, W>(m: &'a [TlsVersion]) -> impl SerializeFn<W> + 'a
+where
+    W: Write + 'a,
+{
+    tagged_extension(
+        TlsExtensionType::SupportedVersions,
+        length_be_u8(all(m.iter().map(|v| be_u16(u16::from(*v))))),
+    )
+}
+
+fn gen_tls_ext_signature_scheme_list<'a, W>(m: &'a [SignatureScheme]) -> impl SerializeFn<W> + 'a
+where
+    W: Write + 'a,
+{
+    tagged_extension(
+        TlsExtensionType::SignatureAlgorithms,
+        length_be_u16(all(m.iter().map(|v| be_u16(v.0)))),
+    )
+}
+
+fn gen_tls_ext_supported_groups<'a, W>(groups: &'a [NamedGroup]) -> impl SerializeFn<W> + 'a
+where
+    W: Write + 'a,
+{
+    tagged_extension(
+        TlsExtensionType::SupportedGroups,
+        length_be_u16(all(groups.iter().map(|&g| gen_tls_named_group(g)))),
+    )
+}
+
+pub fn length_be_u8<W, F>(f: F) -> impl SerializeFn<W>
+where
+    W: Write,
+    F: SerializeFn<Vec<u8>>,
+{
+    move |out| {
+        // use a temporary buffer
+        let (buf, len) = gen(&f, Vec::new())?;
+        tuple((be_u8(len as u8), slice(buf)))(out)
+    }
+}
+
+pub fn length_be_u16<W, F>(f: F) -> impl SerializeFn<W>
 where
     W: Write,
     F: SerializeFn<Vec<u8>>,
@@ -32,7 +80,7 @@ where
     }
 }
 
-fn length_be_u24<W, F>(f: F) -> impl SerializeFn<W>
+pub fn length_be_u24<W, F>(f: F) -> impl SerializeFn<W>
 where
     W: Write,
     F: SerializeFn<Vec<u8>>,
@@ -44,46 +92,61 @@ where
     }
 }
 
-fn tagged_extension<W, F>(tag: u16, f: F) -> impl SerializeFn<W>
+pub fn tagged_extension<W, F>(tag: TlsExtensionType, f: F) -> impl SerializeFn<W>
 where
     W: Write,
     F: SerializeFn<Vec<u8>>,
 {
-    move |out| tuple((be_u16(tag), length_be_u16(&f)))(out)
+    move |out| tuple((be_u16(tag.0), length_be_u16(&f)))(out)
 }
 
-fn gen_tls_ext_sni<'a, W>(m: &'a [(SNIType, &[u8])]) -> impl SerializeFn<W> + 'a
+pub fn gen_tls_ext_sni<'a, W>(m: &'a [(SNIType, &[u8])]) -> impl SerializeFn<W> + 'a
 where
     W: Write + 'a,
 {
     tagged_extension(
-        u16::from(TlsExtensionType::ServerName),
+        TlsExtensionType::ServerName,
         length_be_u16(many_ref(m, gen_tls_ext_sni_hostname)),
     )
 }
 
-fn gen_tls_ext_max_fragment_length<W>(l: u8) -> impl SerializeFn<W>
+pub fn gen_tls_ext_max_fragment_length<W>(l: u8) -> impl SerializeFn<W>
 where
     W: Write,
 {
-    tagged_extension(u16::from(TlsExtensionType::MaxFragmentLength), be_u8(l))
+    tagged_extension(TlsExtensionType::MaxFragmentLength, be_u8(l))
 }
 
-fn gen_tls_named_group<W>(g: NamedGroup) -> impl SerializeFn<W>
+pub fn gen_tls_named_group<W>(g: NamedGroup) -> impl SerializeFn<W>
 where
     W: Write,
 {
     be_u16(g.0)
 }
 
-fn gen_tls_ext_elliptic_curves<'a, W>(v: &'a [NamedGroup]) -> impl SerializeFn<W> + 'a
+pub fn gen_tls_ext_elliptic_curves<'a, W>(v: &'a [NamedGroup]) -> impl SerializeFn<W> + 'a
 where
     W: Write + 'a,
 {
     tagged_extension(
-        u16::from(TlsExtensionType::SupportedGroups),
+        TlsExtensionType::SupportedGroups,
         length_be_u16(all(v.iter().map(|&g| gen_tls_named_group(g)))),
     )
+}
+
+fn gen_tls_key_share_entry<'a, W>(m: &'a KeyShare) -> impl SerializeFn<W> + 'a
+where
+    W: Write + 'a,
+{
+    move |out| match m {
+        KeyShare::KeyShareClientHello { client_shares } => length_be_u16(all(client_shares
+            .iter()
+            .map(|entry| tuple((be_u16(entry.group.0), length_be_u16(slice(entry.kx)))))))(out),
+        KeyShare::KeyShareServerHello { server_share } => tuple((
+            be_u16(server_share.group.0),
+            length_be_u16(slice(server_share.kx)),
+        ))(out),
+    }
 }
 
 /// Serialize a single TLS extension
@@ -111,8 +174,15 @@ where
     move |out| match m {
         TlsExtension::SNI(ref v) => gen_tls_ext_sni(v)(out),
         TlsExtension::MaxFragmentLength(l) => gen_tls_ext_max_fragment_length(*l)(out),
-
+        TlsExtension::SupportedVersions(ref v) => gen_tls_ext_supported_versions(v)(out),
+        TlsExtension::SignatureAlgorithms(ref v) => gen_tls_ext_signature_scheme_list(v)(out),
         TlsExtension::EllipticCurves(ref v) => gen_tls_ext_elliptic_curves(v)(out),
+        TlsExtension::EcPointFormats(ref v) => tagged_extension(
+            TlsExtensionType::EcPointFormats,
+            length_be_u8(length_be_u8(slice(v))),
+        )(out),
+        TlsExtension::KeyShare(ref v) =>
+            tagged_extension(TlsExtensionType::KeyShare, gen_tls_key_share_entry(v))(out),
         _ => Err(GenError::NotYetImplemented),
     }
 }
@@ -160,7 +230,7 @@ where
             all(m.ciphers.iter().map(|cipher| be_u16(cipher.0))),
             be_u8(m.comp.len() as u8),
             all(m.comp.iter().map(|comp| be_u8(comp.0))),
-            maybe_extensions(&m.ext),
+            gen_tls_extensions(&m.ext),
         ))),
     ))
 }
@@ -178,7 +248,7 @@ where
             gen_tls_sessionid(&m.session_id),
             be_u16(m.cipher.0),
             be_u8(m.compression.0),
-            maybe_extensions(&m.ext),
+            gen_tls_extensions(&m.ext),
         ))),
     ))
 }

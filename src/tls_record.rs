@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use std::error::Error;
 use nom::bytes::streaming::take;
 use nom::combinator::{complete, map_parser};
 use nom::error::{make_error, ErrorKind};
@@ -131,6 +132,13 @@ pub fn parse_tls_encrypted(i: &[u8]) -> IResult<&[u8], TlsEncrypted> {
     let msg = TlsEncryptedContent { blob };
     Ok((i, TlsEncrypted { hdr, msg }))
 }
+
+// pub fn parse_tls_encrypted_with_key<'a, 'b>(i: &'a [u8], decrypt: impl Fn(&TlsEncryptedContent) -> Result<&'a [u8], dyn Error>) -> IResult<&'a [u8], TlsPlaintext> {
+//     let (i, enc) = parse_tls_encrypted(i)?;
+//     let data = decrypt(&enc.msg).map_err(|_| Err::Error(make_error(i, ErrorKind::Fail)))?;
+//     let (i, msg) = parse_tls_record_with_header(data, &enc.hdr)?;
+//     Ok((i, TlsPlaintext { hdr: enc.hdr, msg }))
+// }
 
 /// Read TLS record envelope, but do not decode data
 ///

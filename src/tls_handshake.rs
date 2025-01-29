@@ -16,6 +16,7 @@ use crate::tls_ciphers::*;
 // use crate::tls_debug::*;
 use crate::tls_ec::*;
 use crate::tls_message::TlsMessage;
+use crate::{parse_tls_extensions, TlsExtension};
 
 /// Handshake type
 ///
@@ -224,7 +225,7 @@ pub trait ClientHello<'a> {
     }
     /// A list of compression methods supported by client
     fn comp(&self) -> &Vec<TlsCompressionID>;
-    fn ext(&self) -> Option<&'a [u8]>;
+    fn ext(&self) -> &Vec<TlsExtension<'a>>;
 }
 
 /// TLS Client Hello (from TLS 1.0 to TLS 1.2)
@@ -242,7 +243,7 @@ pub struct TlsClientHelloContents<'a> {
     /// A list of compression methods supported by client
     pub comp: Vec<TlsCompressionID>,
 
-    pub ext: Option<&'a [u8]>,
+    pub ext: Vec<TlsExtension<'a>>,
 }
 
 impl<'a> TlsClientHelloContents<'a> {
@@ -252,7 +253,7 @@ impl<'a> TlsClientHelloContents<'a> {
         sid: Option<&'a [u8]>,
         c: Vec<TlsCipherSuiteID>,
         co: Vec<TlsCompressionID>,
-        e: Option<&'a [u8]>,
+        e: Vec<TlsExtension<'a>>,
     ) -> Self {
         TlsClientHelloContents {
             version: TlsVersion(v),
@@ -294,8 +295,8 @@ impl<'a> ClientHello<'a> for TlsClientHelloContents<'a> {
         &self.comp
     }
 
-    fn ext(&self) -> Option<&'a [u8]> {
-        self.ext
+    fn ext(&self) -> &Vec<TlsExtension<'a>> {
+        &self.ext
     }
 }
 
@@ -308,7 +309,7 @@ pub struct TlsServerHelloContents<'a> {
     pub cipher: TlsCipherSuiteID,
     pub compression: TlsCompressionID,
 
-    pub ext: Option<&'a [u8]>,
+    pub ext: Vec<TlsExtension<'a>>,
 }
 
 /// TLS Server Hello (TLS 1.3 draft 18)
@@ -337,7 +338,7 @@ impl<'a> TlsServerHelloContents<'a> {
         sid: Option<&'a [u8]>,
         c: u16,
         co: u8,
-        e: Option<&'a [u8]>,
+        e: Vec<TlsExtension<'a>>,
     ) -> Self {
         TlsServerHelloContents {
             version: TlsVersion(v),
@@ -485,7 +486,7 @@ pub fn parse_tls_handshake_client_hello(i: &[u8]) -> IResult<&[u8], TlsClientHel
     let (i, ciphers) = parse_cipher_suites(i, ciphers_len as usize)?;
     let (i, comp_len) = be_u8(i)?;
     let (i, comp) = parse_compressions_algs(i, comp_len as usize)?;
-    let (i, ext) = opt(complete(length_data(be_u16)))(i)?;
+    let (i, ext) = complete(parse_tls_extensions)(i)?;
     let content = TlsClientHelloContents::new(version, random, sid, ciphers, comp, ext);
     Ok((i, content))
 }
@@ -581,9 +582,9 @@ pub(crate) fn parse_tls_server_hello_tlsv12<const HAS_EXT: bool>(
     let (i, cipher) = be_u16(i)?;
     let (i, comp) = be_u8(i)?;
     let (i, ext) = if HAS_EXT {
-        opt(complete(length_data(be_u16)))(i)?
+        complete(parse_tls_extensions)(i)?
     } else {
-        (i, None)
+        (&i[i.len()..], Vec::new())
     };
     let content = TlsServerHelloContents::new(version, random, sid, cipher, comp, ext);
     Ok((i, content))

@@ -21,7 +21,7 @@ impl<'a> fmt::Debug for TlsClientHelloContents<'a> {
             .field("session_id", &self.session_id.map(HexSlice))
             .field("ciphers", &self.ciphers)
             .field("comp", &self.comp)
-            .field("ext", &self.ext.map(HexSlice))
+            .field("ext", &self.ext)
             .finish()
     }
 }
@@ -34,7 +34,7 @@ impl<'a> fmt::Debug for TlsServerHelloContents<'a> {
             .field("session_id", &self.session_id.map(HexSlice))
             .field("cipher", &self.cipher)
             .field("compression", &self.compression)
-            .field("ext", &self.ext.map(HexSlice))
+            .field("ext", &self.ext)
             .finish()
     }
 }
@@ -147,7 +147,7 @@ impl<'a> fmt::Debug for ECParameters<'a> {
 // ------------------------- tls_extensions.rs ------------------------------
 impl<'a> fmt::Debug for TlsExtension<'a> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
+        match self {
             TlsExtension::SNI(ref v) => {
                 let v: Vec<_> = v
                     .iter()
@@ -172,14 +172,14 @@ impl<'a> fmt::Debug for TlsExtension<'a> {
             TlsExtension::SignatureAlgorithms(ref v) => {
                 let v2: Vec<_> = v
                     .iter()
-                    .map(|&alg| {
-                        let s = format!("{}", SignatureScheme(alg));
+                    .map(|alg| {
+                        let s = format!("{}", alg);
                         if s.starts_with("SignatureScheme") {
                             format!(
                                 "{}",
                                 SignatureAndHashAlgorithm {
-                                    hash: HashAlgorithm((alg >> 8) as u8),
-                                    sign: SignAlgorithm((alg & 0xff) as u8)
+                                    hash: HashAlgorithm((alg.0 >> 8) as u8),
+                                    sign: SignAlgorithm((alg.0 & 0xff) as u8)
                                 }
                             )
                         } else {
@@ -199,7 +199,7 @@ impl<'a> fmt::Debug for TlsExtension<'a> {
                 write!(fmt, "TlsExtension::KeyShareOld(data={:?})", HexSlice(data))
             }
             TlsExtension::KeyShare(data) => {
-                write!(fmt, "TlsExtension::KeyShare(data={:?})", HexSlice(data))
+                write!(fmt, "TlsExtension::KeyShare(data={:?})", data)
             }
             TlsExtension::PreSharedKey(data) => {
                 write!(fmt, "TlsExtension::PreSharedKey(data={:?})", HexSlice(data))

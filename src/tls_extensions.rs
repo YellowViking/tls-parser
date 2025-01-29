@@ -14,9 +14,10 @@ use nom::combinator::{complete, cond, map, map_parser, opt, verify};
 use nom::error::{make_error, ErrorKind};
 use nom::multi::{length_data, many0};
 use nom::number::streaming::{be_u16, be_u32, be_u8};
-use nom::{Err, IResult};
+use nom::{Err, IResult, Parser};
 use nom_derive::{NomBE, Parse};
 use rusticata_macros::newtype_enum;
+use crate::{length_be_u16, SignatureScheme};
 
 /// TLS extension types,
 /// defined in the [IANA Transport Layer Security (TLS)
@@ -92,6 +93,11 @@ impl From<TlsExtensionType> for u16 {
     }
 }
 
+#[derive(Clone, PartialEq, Debug)]
+pub enum KeyShare<'a> {
+    KeyShareClientHello { client_shares: Vec<KeyShareEntry<'a>> },
+    KeyShareServerHello { server_share: KeyShareEntry<'a> },
+}
 /// TLS extensions
 ///
 #[derive(Clone, PartialEq)]
@@ -101,11 +107,11 @@ pub enum TlsExtension<'a> {
     StatusRequest(Option<(CertificateStatusType, &'a [u8])>),
     EllipticCurves(Vec<NamedGroup>),
     EcPointFormats(&'a [u8]),
-    SignatureAlgorithms(Vec<u16>),
+    SignatureAlgorithms(Vec<SignatureScheme>),
     RecordSizeLimit(u16),
     SessionTicket(&'a [u8]),
     KeyShareOld(&'a [u8]),
-    KeyShare(&'a [u8]),
+    KeyShare(KeyShare<'a>),
     PreSharedKey(&'a [u8]),
     EarlyData(Option<u32>),
     SupportedVersions(Vec<TlsVersion>),
@@ -178,6 +184,12 @@ impl<'a> From<&'a TlsExtension<'a>> for TlsExtensionType {
 pub struct KeyShareEntry<'a> {
     pub group: NamedGroup, // NamedGroup
     pub kx: &'a [u8],      // Key Exchange Data
+}
+
+pub fn parse_key_share_entry(i: &[u8]) -> IResult<&[u8], KeyShareEntry> {
+    let (i, group) = NamedGroup::parse(i)?;
+    let (i, kx) = length_data(be_u16)(i)?;
+    Ok((i, KeyShareEntry { group, kx }))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, NomBE)]
@@ -324,7 +336,8 @@ pub fn parse_tls_extension_ec_point_formats(i: &[u8]) -> IResult<&[u8], TlsExten
 /// Parse 'Signature Algorithms' extension (rfc8446, TLS 1.3 only)
 pub fn parse_tls_extension_signature_algorithms_content(i: &[u8]) -> IResult<&[u8], TlsExtension> {
     let (i, l) = map_parser(length_data(be_u16), many0(complete(be_u16)))(i)?;
-    Ok((i, TlsExtension::SignatureAlgorithms(l))) // XXX SignatureAlgorithms or SignatureScheme
+    let sig_vec = l.into_iter().map(|x| SignatureScheme(x)).collect::<Vec<SignatureScheme>>();
+    Ok((i, TlsExtension::SignatureAlgorithms(sig_vec)))  // XXX SignatureAlgorithms or SignatureScheme
 }
 
 pub fn parse_tls_extension_signature_algorithms(i: &[u8]) -> IResult<&[u8], TlsExtension> {
@@ -439,7 +452,10 @@ fn parse_tls_extension_key_share_old_content(
 }
 
 fn parse_tls_extension_key_share_content(i: &[u8], ext_len: u16) -> IResult<&[u8], TlsExtension> {
-    map(take(ext_len), TlsExtension::KeyShare)(i)
+    map_parser(take(ext_len), |d| {
+        let (d, server_share) = parse_key_share_entry(d)?;
+        Ok((d, TlsExtension::KeyShare(KeyShare::KeyShareServerHello { server_share })))
+    })(i)
 }
 
 pub fn parse_tls_extension_key_share(i: &[u8]) -> IResult<&[u8], TlsExtension> {
@@ -742,5 +758,5 @@ pub fn parse_tls_server_hello_extensions(i: &[u8]) -> IResult<&[u8], Vec<TlsExte
 
 /// Parse zero or more TLS extensions (of any type)
 pub fn parse_tls_extensions(i: &[u8]) -> IResult<&[u8], Vec<TlsExtension>> {
-    many0(complete(parse_tls_extension))(i)
+    map_parser(length_data(be_u16), many0(complete(parse_tls_extension)))(i)
 }

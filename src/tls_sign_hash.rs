@@ -45,7 +45,7 @@ pub struct SignatureAndHashAlgorithm {
 }
 
 /// Signature algorithms, as defined in \[RFC8446\] 4.2.3
-#[derive(Debug, PartialEq, Eq, Nom)]
+#[derive(Debug, PartialEq, Eq, Nom, Copy, Clone)]
 pub struct SignatureScheme(pub u16);
 
 newtype_enum! {
