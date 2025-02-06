@@ -353,6 +353,8 @@ where
         TlsMessageHandshake::ServerHelloV13Draft18(ref m) => gen_tls_serverhellodraft18(m)(out),
         TlsMessageHandshake::ClientKeyExchange(ref m) => gen_tls_clientkeyexchange(m)(out),
         TlsMessageHandshake::Finished(m) => gen_tls_finished(m)(out),
+        TlsMessageHandshake::Certificate(m) => gen_tls_certificate(m)(out),
+        TlsMessageHandshake::CertificateVerify(m) => gen_tls_certificate_verify_content(m)(out),
         _ => Err(GenError::NotYetImplemented),
     }
 }
@@ -362,6 +364,63 @@ impl<'a> Serialize<Vec<u8>> for TlsMessageHandshake<'a> {
     fn serialize(&self) -> Result<Vec<u8>, Self::Error> {
         gen_simple(gen_tls_messagehandshake(self), Vec::new())
     }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct CertificateVerifyContent<'a> {
+    pub scheme: SignatureScheme,
+    pub signature: &'a [u8],
+}
+impl<'a> Serialize<Vec<u8>> for CertificateVerifyContent<'a> {
+    type Error = GenError;
+    fn serialize(&self) -> Result<Vec<u8>, Self::Error> {
+        gen_simple(gen_tls_certificate_verify_content(self), Vec::new())
+    }
+}
+// struct {
+//     SignatureScheme algorithm;
+//     opaque signature<0..2^16-1>;
+// } CertificateVerify;
+pub fn gen_tls_certificate_verify_content<'a, W>(m: &'a CertificateVerifyContent) -> impl SerializeFn<W> + 'a
+where
+    W: Write + 'a,
+{
+    tuple((
+        be_u8(u8::from(TlsHandshakeType::CertificateVerify)),
+        length_be_u24(
+            tuple((
+                be_u16(m.scheme.0),
+                length_be_u16(slice(m.signature)),
+            )
+            )
+        )
+    ))
+}
+impl<'a> Serialize<Vec<u8>> for TlsRecordHeader {
+    type Error = GenError;
+    fn serialize(&self) -> Result<Vec<u8>, Self::Error> {
+        let gen_record = (be_u8(self.record_type.0), be_u16(self.version.0), be_u16(self.len));
+        gen_simple(tuple(gen_record), Vec::new())
+    }
+}
+
+pub fn gen_tls_certificate<'a, W>(m: &'a TlsCertificateContents) -> impl SerializeFn<W> + 'a
+where
+    W: Write + 'a,
+{
+    // struct {
+    //     opaque certificate_request_context<0..2^8-1>;
+    //     CertificateEntry certificate_list<0..2^24-1>;
+    // } Certificate;
+    tuple((
+        be_u8(u8::from(TlsHandshakeType::Certificate)),
+        length_be_u24(tuple((
+            be_u8(0),
+            length_be_u24(all(m.cert_chain.iter().map(|cert|
+                tuple((length_be_u24(slice(cert.data)), be_u16(0u16))) // exts
+            )))),
+        )),
+    ))
 }
 
 /// Serialize a ChangeCipherSpec message
@@ -403,6 +462,13 @@ impl<'a> Serialize<Vec<u8>> for TlsMessage<'a> {
     }
 }
 
+impl<'a> Serialize<Vec<u8>> for TlsEncrypted<'a> {
+    type Error = GenError;
+    fn serialize(&self) -> Result<Vec<u8>, Self::Error> {
+        gen_simple(gen_tls_encrypted(self), Vec::new())
+    }
+}
+
 /// Serialize a TLS plaintext record
 ///
 /// # Example
@@ -425,6 +491,13 @@ where
         be_u16(p.hdr.version.0),
         length_be_u16(all(p.msg.iter().map(gen_tls_message))),
     ))
+}
+
+pub fn gen_tls_encrypted<'a, W>(p: &'a TlsEncrypted) -> impl SerializeFn<W> + 'a
+where
+    W: Write + 'a,
+{
+    tuple((be_u8(p.hdr.record_type.0), be_u16(p.hdr.version.0), be_u16(p.hdr.len), slice(&p.msg.blob)))
 }
 
 impl<'a> Serialize<Vec<u8>> for TlsPlaintext<'a> {

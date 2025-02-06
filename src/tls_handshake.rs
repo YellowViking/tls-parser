@@ -16,7 +16,7 @@ use crate::tls_ciphers::*;
 // use crate::tls_debug::*;
 use crate::tls_ec::*;
 use crate::tls_message::TlsMessage;
-use crate::{parse_tls_extensions, TlsExtension};
+use crate::{parse_tls_extensions, CertificateVerifyContent, SignatureScheme, TlsExtension};
 
 /// Handshake type
 ///
@@ -452,11 +452,12 @@ pub enum TlsMessageHandshake<'a> {
     ServerKeyExchange(TlsServerKeyExchangeContents<'a>),
     CertificateRequest(TlsCertificateRequestContents<'a>),
     ServerDone(&'a [u8]),
-    CertificateVerify(&'a [u8]),
+    CertificateVerify(CertificateVerifyContent<'a>),
     ClientKeyExchange(TlsClientKeyExchangeContents<'a>),
     Finished(&'a [u8]),
     CertificateStatus(TlsCertificateStatusContents<'a>),
     NextProtocol(TlsNextProtocolContent<'a>),
+    EncryptedExtensions(Vec<TlsExtension<'a>>),
     KeyUpdate(u8),
 }
 
@@ -700,6 +701,8 @@ pub fn parse_tls_handshake_msg_hello_retry_request(
 }
 
 pub(crate) fn parse_tls_certificate(i: &[u8]) -> IResult<&[u8], TlsCertificateContents> {
+    let (i, certificate_request_context_len) = be_u8(i)?;
+    let (i, certificate_request_context) = take(certificate_request_context_len as usize)(i)?;
     let (i, cert_len) = be_u24(i)?;
     let (i, cert_chain) = map_parser(take(cert_len as usize), parse_certs)(i)?;
     let content = TlsCertificateContents { cert_chain };
@@ -734,7 +737,12 @@ pub fn parse_tls_handshake_msg_certificateverify(
     i: &[u8],
     len: usize,
 ) -> IResult<&[u8], TlsMessageHandshake> {
-    map(take(len), TlsMessageHandshake::CertificateVerify)(i)
+    fn parse_certverifycontent(i: &[u8]) -> IResult<&[u8], TlsMessageHandshake> {
+        let (i, scheme) = SignatureScheme::parse_be(i)?;
+        let (i, signature) = length_data(be_u16)(i)?;
+        Ok((i, TlsMessageHandshake::CertificateVerify(CertificateVerifyContent { scheme, signature })))
+    }
+    map_parser(take(len), parse_certverifycontent)(i)
 }
 
 pub(crate) fn parse_tls_clientkeyexchange(
@@ -902,6 +910,10 @@ pub fn parse_tls_message_handshake(i: &[u8]) -> IResult<&[u8], TlsMessage> {
         TlsHandshakeType::CertificateStatus => parse_tls_handshake_msg_certificatestatus(raw_msg),
         TlsHandshakeType::KeyUpdate => parse_tls_handshake_msg_key_update(raw_msg),
         TlsHandshakeType::NextProtocol => parse_tls_handshake_msg_next_protocol(raw_msg),
+        TlsHandshakeType::EncryptedExtensions => {
+            let parsed = parse_tls_extensions(raw_msg)?;
+            Ok((parsed.0, TlsMessageHandshake::EncryptedExtensions(parsed.1)))
+        }
         _ => Err(Err::Error(make_error(i, ErrorKind::Switch))),
     }?;
     Ok((i, TlsMessage::Handshake(msg)))
